@@ -1,0 +1,244 @@
+# Journal de bord - Session 2 - Investigation Metasploitable 2
+
+**Date :** 11 novembre 2026  
+**Environnement :** Ubuntu 26.04 / VirtualBox / Metasploitable 2  
+**IP de la cible :** `192.168.56.101`  
+**Réseau :** Host-only (`vboxnet0`)
+
+---
+
+## 1. Préparation de l'environnement
+
+Avant de commencer l'investigation, j'ai vérifié la configuration réseau de ma machine et préparé l'environnement de travail.
+
+Commandes utilisées :
+
+```bash
+ifconfig
+sudo loadkeys fr
+ip route
+ifconfig eth1
+sudo dhclient eth1
+```
+
+L'objectif était de vérifier les interfaces réseau et de permettre la communication avec la machine Metasploitable 2.
+
+---
+
+## 2. Identification des services avec Nmap
+
+J'ai commencé par effectuer une détection des services et de leurs versions sur la machine cible.
+
+```bash
+nmap -sV 192.168.56.101
+```
+
+### Résultats observés
+
+| Port    | État   | Service     | Version                  |
+| ------- | ------ | ----------- | ------------------------ |
+| 139/tcp | Ouvert | netbios-ssn | Samba smbd 3.X - 4.X     |
+| 445/tcp | Ouvert | netbios-ssn | Samba smbd 3.0.20-Debian |
+
+Nmap a également identifié plusieurs informations :
+
+- Nom de la machine : `metasploitable`
+- Domaine : `localdomain`
+- Nom complet : `metasploitable.localdomain`
+- Groupe de travail : `WORKGROUP`
+- Protocole SMBv1 détecté.
+
+### Analyse
+
+Les ports 139 et 445 sont associés au partage de fichiers et aux communications SMB.
+
+Samba est une implémentation du protocole SMB permettant notamment le partage de fichiers et d'imprimantes entre systèmes.
+
+La présence de SMBv1 constitue un élément intéressant à relever, car cette ancienne version du protocole présente des faiblesses de sécurité connues.
+
+J'ai également lancé :
+
+```bash
+smbclient -L //192.168.56.101 -N
+```
+
+Cette commande permet de demander la liste des partages SMB accessibles sans fournir de mot de passe.
+
+---
+
+## 3. Investigation des ports 512, 513 et 514
+
+J'ai ensuite orienté mon investigation vers trois ports associés aux anciens services Unix de communication à distance.
+
+### 3.1 Identification des services
+
+Première commande :
+
+```bash
+nmap -sV -p 512 192.168.56.101
+```
+
+Puis analyse groupée :
+
+```bash
+nmap -sV -p 512,513,514 192.168.56.101
+```
+
+Résultat notable :
+
+```text
+513/tcp open login OpenBSD or Solaris rlogind
+```
+
+Le port 513 correspond donc au service `rlogin`.
+
+### 3.2 Rôle des trois ports
+
+| Port | Service historique | Fonction                                        |
+| ---- | ------------------ | ----------------------------------------------- |
+| 512  | rexec              | Exécution de commandes à distance               |
+| 513  | rlogin             | Connexion interactive à distance                |
+| 514  | rsh                | Exécution d'un shell ou de commandes à distance |
+
+Ces services appartiennent à la famille des anciens services Unix de communication à distance.
+
+Ils présentent notamment des risques liés à leur ancienneté et à l'absence de chiffrement des communications.
+
+### 3.3 Vérification avec les scripts Nmap
+
+J'ai lancé plusieurs commandes pour obtenir davantage d'informations.
+
+```bash
+nmap -sC -p 513 192.168.56.101
+nmap -sV -p 514 192.168.56.101
+nmap -sC -p 514 192.168.56.101
+```
+
+Ces tests n'ont pas apporté d'informations supplémentaires significatives.
+
+J'ai ensuite consulté l'aide des scripts NSE :
+
+```bash
+nmap --script-help "rlogin*"
+nmap --script-help "rsh*"
+```
+
+La recherche `rsh*` n'a pas trouvé de script correspondant dans mon installation.
+
+Pour identifier les scripts disponibles, j'ai utilisé :
+
+```bash
+ls /usr/share/nmap/scripts/ | grep -E 'rsh|rexec|rlogin'
+```
+
+Deux scripts ont notamment été repérés :
+
+- `rexec-brute.nse`
+- `rlogin-brute.nse`
+
+---
+
+## 4. Analyse des scripts NSE
+
+J'ai consulté le contenu des deux scripts avec `less` :
+
+```bash
+less /usr/share/nmap/scripts/rlogin-brute.nse
+less /usr/share/nmap/scripts/rexec-brute.nse
+```
+
+### 4.1 Script rlogin-brute.nse
+
+Ce script est conçu pour effectuer un audit de mots de passe sur le service rlogin.
+
+Informations relevées dans le code :
+
+- Catégories : `brute`, `intrusive`
+- Auteur : Patrik Karlsson
+- Bibliothèques utilisées : `brute`, `creds`, `math`, `nmap`, `shortport` et `stdnse`.
+- Port ciblé : 513/tcp.
+
+Le script utilise notamment :
+
+```lua
+local brute = require "brute"
+local creds = require "creds"
+local math = require "math"
+local nmap = require "nmap"
+```
+
+Il initialise une connexion réseau, configure un délai d'attente et tente d'établir une connexion au service distant.
+
+Une partie du code sélectionne également un port source aléatoire :
+
+```lua
+local srcport = math.random(513, 1024)
+self.socket:bind(nil, srcport)
+```
+
+Cette logique est liée aux exigences historiques du service rlogin concernant les ports sources réservés.
+
+Le script vérifie également si Nmap dispose des privilèges nécessaires à son exécution.
+
+**Important :** je me suis limitée à la lecture et à l'analyse du code. Je n'ai pas exécuté de tentative de brute force.
+
+### 4.2 Script rexec-brute.nse
+
+Le script `rexec-brute.nse` est également destiné à l'audit de mots de passe, mais cible le service rexec.
+
+Il appartient à la même famille de scripts NSE orientés vers les tests d'authentification.
+
+La différence principale concerne donc le service ciblé :
+
+- `rlogin-brute.nse` : service rlogin, port 513.
+- `rexec-brute.nse` : service rexec, port 512.
+
+---
+
+## 5. Commandes et notions étudiées
+
+| Commande ou option | Fonction                                             |
+| ------------------ | ---------------------------------------------------- |
+| `nmap`             | Analyse des ports et services réseau                 |
+| `-p`               | Sélection d'un ou plusieurs ports                    |
+| `-sV`              | Détection des services et de leurs versions          |
+| `-sC`              | Exécution des scripts NSE par défaut                 |
+| `--script-help`    | Consultation de l'aide d'un script NSE               |
+| `ls`               | Affichage du contenu d'un répertoire                 |
+| `grep -E`          | Recherche avec expressions régulières                |
+| `less`             | Lecture d'un fichier dans le terminal                |
+| `\|`               | Transmission de la sortie d'une commande à une autre |
+
+J'ai également approfondi la différence entre un utilisateur classique et l'utilisateur `root`.
+
+Un utilisateur classique dispose de droits limités selon les permissions qui lui sont accordées. L'utilisateur `root` possède les privilèges administrateur du système.
+
+---
+
+## 6. Bilan de la session
+
+Cette session m'a permis de :
+
+- Identifier plusieurs services réseau présents sur Metasploitable 2.
+- Comprendre le rôle des ports 139 et 445 associés à Samba et SMB.
+- Découvrir les services historiques rexec, rlogin et rsh.
+- Comprendre le fonctionnement général des scripts NSE de Nmap.
+- Identifier les catégories `brute` et `intrusive`.
+- Lire et analyser du code Lua utilisé dans les scripts Nmap.
+- Comprendre pourquoi certains scripts nécessitent des privilèges élevés.
+
+Je commence à mieux distinguer l'identification d'un service, l'analyse de son fonctionnement et la recherche de potentielles faiblesses de sécurité.
+
+**Aucune exploitation ni tentative de brute force n'a été réalisée durant cette session.**
+
+---
+
+## 7. Suite de l'investigation
+
+Poursuivre l'analyse des ports de Metasploitable 2, un par un, en privilégiant :
+
+1. L'identification du service.
+2. La compréhension de son fonctionnement.
+3. L'analyse des informations accessibles.
+4. L'étude des éventuelles faiblesses de sécurité.
+5. La documentation des résultats dans le journal de laboratoire.

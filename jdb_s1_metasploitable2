@@ -1,0 +1,353 @@
+# Journal de bord - Session 1 — Investigation Metasploitable 2
+
+**Séance :** 9 novembre 2026  
+**Analyste :** Margaux  
+**Environnement :** Ubuntu 26.04 + VirtualBox  
+**Cible :** Metasploitable 2  
+**Adresse IP de la cible :** `192.168.56.101`  
+**Réseau :** Host-only (`vboxnet0`)
+
+---
+
+## 1. Objectif de la séance
+
+Découvrir les services réseau accessibles sur une machine volontairement vulnérable, identifier les logiciels et leurs versions, puis commencer à comprendre les risques associés à chaque service.
+
+Les étapes réalisées :
+
+1. Découverte de la machine sur le réseau local isolé.
+2. Scan des ports avec Nmap.
+3. Identification des services et versions.
+4. Première analyse des risques de sécurité.
+5. Vérification de l'accès FTP anonyme.
+
+## 2. Environnement et préparation
+
+### Configuration réseau
+
+- Machine hôte : Ubuntu.
+- Interface Host-only : `vboxnet0`.
+- Adresse IP de l'hôte sur ce réseau : `192.168.56.1`.
+- Adresse IP de Metasploitable : `192.168.56.101`.
+- Réseau isolé du réseau domestique.
+
+### Commandes de préparation
+
+**Afficher les interfaces réseau :**
+
+```bash
+ip addr
+```
+
+**Afficher les routes réseau :**
+
+```bash
+ip route
+```
+
+**Afficher les interfaces de Metasploitable :**
+
+```bash
+ifconfig
+```
+
+**Afficher une interface précise :**
+
+```bash
+ifconfig eth1
+```
+
+**Demander une adresse IP en DHCP :**
+
+```bash
+sudo dhclient eth1
+```
+
+**Vérifier la connectivité avec la cible :**
+
+```bash
+ping -c 4 192.168.56.101
+```
+
+Résultat : communication entre Ubuntu et Metasploitable confirmée.
+
+**Configurer temporairement le clavier français dans Metasploitable :**
+
+```bash
+sudo loadkeys fr
+```
+
+Résultat : clavier AZERTY fonctionnel dans la console de la VM.
+
+---
+
+## 3. Reconnaissance avec Nmap
+
+### Première commande : scan des services et versions
+
+```bash
+nmap -sV 192.168.56.101
+```
+
+**Explication :**
+
+- `nmap` : outil de scan réseau via le terminal de mon ordinateur.
+- `-sV` : tente d'identifier les logiciels et leurs versions.
+- `192.168.56.101` : adresse IP de la machine cible.
+
+J'ai fait une erreur de saisie : j'ai mis `v` en minuscule.
+
+Nmap est sensible à la casse : il faut bien utiliser le `V` majuscule.
+
+### Résultats observés
+
+| Port    | Service | Logiciel / version |
+| ------- | ------- | ------------------ |
+| 21/TCP  | FTP     | vsftpd 2.3.4       |
+| 22/TCP  | SSH     | OpenSSH 4.7p1      |
+| 23/TCP  | Telnet  | Linux telnet       |
+| 25/TCP  | SMTP    | Postfix            |
+| 53/TCP  | DNS     | ISC BIND 9.4.2     |
+| 80/TCP  | HTTP    | Apache 2.2.8       |
+| 111/TCP | RPCbind | RPC version 2      |
+
+Les ports sont indiqués comme `open` (ouverts), ce qui signifie que les services correspondants acceptent des connexions.
+
+---
+
+## 4. Analyse des services
+
+### Port 21 — FTP
+
+**Logiciel :** vsftpd 2.3.4  
+**Fonction :** transfert de fichiers entre machines.
+
+**Vérification réalisée :**
+
+```bash
+nmap -p 21 --script ftp-anon 192.168.56.101
+```
+
+Cette commande utilise le script Nmap `ftp-anon` pour vérifier si le serveur autorise les connexions anonymes.
+
+**Résultats observés :**
+
+- Connexion FTP anonyme autorisée.
+- Version 2.3.4, version célèbre dans le pentest et historiquement associée à une porte dérobée.
+- Code de réponse FTP : `230` (le serveur confirme la connexion).
+
+**Risques potentiels :**
+
+- Accès non autorisé aux fichiers : une personne pourrait consulter, télécharger, voire modifier des fichiers selon les permissions.
+- Interception des échanges : FTP transmet les identifiants et les données sans chiffrement. Une personne capable d'observer le trafic réseau peut donc récupérer des données en transit.
+
+**Point de vigilance :**
+
+La version vsftpd 2.3.4 est historiquement associée à une porte dérobée présente dans une archive compromise distribuée en 2011. La version détectée ne prouve pas à elle seule que cette porte dérobée est présente.
+
+**Recommandations :**
+
+- Désactiver l'accès anonyme s'il n'est pas nécessaire.
+- Contrôler les permissions des dossiers.
+- Privilégier un transfert chiffré, comme SFTP.
+
+### Port 22 — SSH
+
+**Logiciel :** OpenSSH 4.7p1  
+**Fonction :** administration et connexion à distance à un terminal.
+
+**Risques potentiels :**
+
+- Compromission d'un compte utilisateur.
+- Exécution de commandes à distance avec les droits de ce compte.
+- Contrôle beaucoup plus important si un compte administrateur est compromis, puisque la machine devient contrôlable à distance.
+
+**Recommandations :**
+
+- Utiliser des méthodes d'authentification robustes.
+- Limiter les comptes autorisés.
+- Appliquer le principe du moindre privilège : donner à chaque utilisateur uniquement les droits nécessaires à ses tâches.
+- Maintenir OpenSSH à jour.
+
+### Port 23 — Telnet
+
+**Logiciel :** Linux telnet  
+**Fonction :** connexion à distance à un terminal.
+
+**Risque principal :**
+
+Telnet classique ne chiffre généralement pas les communications. Les identifiants et les commandes peuvent donc être interceptés par une personne capable d'observer le trafic réseau.
+
+**Recommandation :**
+
+Désactiver Telnet et privilégier SSH, qui chiffre les communications.
+
+### Port 25 — SMTP
+
+**Logiciel :** Postfix  
+**Fonction :** réception et transmission des courriels.
+
+**Risques potentiels :**
+
+- Relais SMTP ouvert.
+- Envoi de spam.
+- Phishing.
+- Usurpation de l'expéditeur et fraude par e-mail.
+
+**Attention :** le relais SMTP ouvert n'a pas encore été vérifié. Il s'agit d'une hypothèse à examiner.
+
+**Recommandation :**
+
+Restreindre le relais aux expéditeurs et réseaux autorisés.
+
+### Port 53 — DNS
+
+**Logiciel :** ISC BIND 9.4.2  
+**Fonction :** résolution des noms de domaine en adresses IP.
+
+**Risques potentiels :**
+
+- Divulgation d'informations sur l'infrastructure.
+- Découverte de noms de machines.
+- Transferts de zone DNS non autorisés.
+
+**Recommandation :**
+
+Restreindre les transferts de zone aux serveurs DNS autorisés et vérifier la configuration.
+
+### Port 80 — HTTP
+
+**Logiciel :** Apache httpd 2.2.8 (Ubuntu), avec DAV/2.  
+**Fonction :** hébergement et distribution de pages web.  
+**WebDAV :** extension HTTP permettant notamment la gestion de fichiers à distance.
+
+**Risques potentiels :**
+
+- Divulgation de fichiers.
+- Modification ou suppression de fichiers si WebDAV est mal configuré.
+- Altération du contenu du site.
+- Indisponibilité du site.
+
+**Recommandations :**
+
+- Contrôler les permissions WebDAV.
+- Désactiver les fonctionnalités inutiles.
+- Mettre à jour Apache.
+- Contrôler les fichiers accessibles depuis le serveur web.
+
+### Port 111 — RPCbind
+
+**Service :** RPCbind, version 2.  
+**Fonction :** annuaire permettant aux clients de découvrir les services RPC disponibles sur une machine.
+
+**Risques potentiels :**
+
+- Découverte des services RPC.
+- Identification de services de partage de fichiers comme NFS.
+- Collecte d'informations facilitant la reconnaissance du réseau.
+
+**Recommandation :**
+
+Limiter l'exposition de RPCbind et contrôler les services RPC accessibles.
+
+---
+
+## 5. Notions de cybersécurité apprises
+
+| Notion                    | Ce que j'ai appris                                                 |
+| ------------------------- | ------------------------------------------------------------------ |
+| Port ouvert               | Un service accepte les connexions sur un port.                     |
+| Scan réseau               | Permet de découvrir les ports accessibles.                         |
+| Identification de version | Permet de connaître les logiciels utilisés.                        |
+| FTP anonyme               | Accès FTP sans identifiants personnels.                            |
+| Code FTP 230              | Connexion FTP établie.                                             |
+| SSH                       | Administration distante avec communications chiffrées.             |
+| Telnet                    | Administration distante sans chiffrement classique.                |
+| SMTP                      | Transmission de courriels.                                         |
+| Open Relay                | Serveur SMTP qui relaie des messages sans autorisation suffisante. |
+| DNS                       | Résolution des noms en adresses IP.                                |
+| WebDAV                    | Gestion de fichiers à distance via HTTP.                           |
+| RPCbind                   | Découverte des services RPC.                                       |
+| Moindre privilège         | Donner uniquement les droits nécessaires à chaque utilisateur.     |
+| Confidentialité           | Empêcher l'accès non autorisé aux informations.                    |
+| Intégrité                 | Empêcher les modifications non autorisées.                         |
+| Disponibilité             | Garantir l'accès aux services.                                     |
+
+---
+
+## 6. Commandes utilisées pendant la séance
+
+Voici les principales commandes à conserver dans mon carnet de laboratoire.
+
+### Réseau
+
+```bash
+ip addr
+ip route
+ifconfig
+ifconfig eth1
+sudo dhclient eth1
+ping -c 4 192.168.56.101
+```
+
+### Clavier de la VM
+
+```bash
+sudo loadkeys fr
+```
+
+### Scan Nmap
+
+```bash
+nmap -sV 192.168.56.101
+```
+
+### Vérification FTP anonyme
+
+```bash
+nmap -p 21 --script ftp-anon 192.168.56.101
+```
+
+### Arrêt de Metasploitable
+
+```bash
+sudo shutdown -h now
+```
+
+### Quitter un terminal
+
+```bash
+exit
+```
+
+---
+
+## 7. Bilan de la séance
+
+**Travail réalisé :**
+
+- Préparation d'un environnement de laboratoire isolé.
+- Vérification de la communication entre les machines.
+- Découverte de plusieurs ports ouverts.
+- Identification de sept services réseau.
+- Première évaluation des risques.
+- Détection d'un accès FTP anonyme autorisé.
+
+**Points à approfondir :**
+
+- Vérifier la présence éventuelle de la porte dérobée vsftpd 2.3.4.
+- Examiner les permissions du compte FTP anonyme.
+- Vérifier la configuration du relais SMTP.
+- Examiner les transferts de zone DNS.
+- Étudier la configuration WebDAV.
+- Identifier les services RPC disponibles.
+
+**État à la fin de la séance :**
+
+Metasploitable 2 a été arrêtée brutalement et VirtualBox indique « Avorté ». La VM `solia-srv01` est restée éteinte et n'a pas été modifiée.
+
+**Prochaine séance :** reprendre l'analyse à partir du port 111 (RPCbind), puis poursuivre l'étude des autres services avant toute tentative d'exploitation.
+
+---
+
+_Note méthodologique : les risques mentionnés sont des hypothèses fondées sur les services et versions détectés. Ils ne constituent pas tous des vulnérabilités confirmées. Une analyse de sécurité doit distinguer les observations, les hypothèses et les preuves._
